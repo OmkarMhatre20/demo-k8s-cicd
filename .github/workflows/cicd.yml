@@ -1,0 +1,84 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-test-deploy:
+    runs-on: self-hosted
+
+    steps:
+
+      # 1. Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Setup Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 3. Install Python dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/requirements.txt
+
+      # 4. Basic Python code test
+      - name: Test Python code
+        run: |
+          python -m py_compile app/app.py
+
+      # 5. Build Docker image
+      - name: Build Docker image
+        run: |
+          docker build -t fastapi-app:${{ github.sha }} ./app
+
+      # 6. Test Docker container
+      - name: Test Docker container
+        shell: powershell
+        run: |
+          docker run -d `
+            --name fastapi-test `
+            -p 8001:8000 `
+            fastapi-app:${{ github.sha }}
+
+          Start-Sleep -Seconds 5
+
+          try {
+            $response = Invoke-WebRequest `
+              -Uri http://localhost:8001/health `
+              -UseBasicParsing
+
+            if ($response.StatusCode -ne 200) {
+              throw "Health check failed"
+            }
+
+            Write-Host "Container health check passed"
+          }
+          finally {
+            docker rm -f fastapi-test
+          }
+
+      # 7. Deploy to Kubernetes
+      - name: Deploy to Kubernetes
+        shell: powershell
+        run: |
+          kubectl apply -f secret.yaml
+          kubectl apply -f k8s/postgress.yaml
+          kubectl apply -f app/app.yaml
+          kubectl apply -f ingress.yaml
+
+          kubectl set image deployment/fastapi `
+            fastapi=fastapi-app:${{ github.sha }}
+
+      # 8. Verify Kubernetes deployment
+      - name: Verify deployment
+        shell: powershell
+        run: |
+          kubectl rollout status deployment/fastapi --timeout=120s
+          kubectl get pods
+          kubectl get deployment fastapi
